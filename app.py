@@ -59,29 +59,10 @@ def lease_start_year_from_tenure(val):
 def load_data(path: Path) -> pd.DataFrame:
     use_cols = [
         "project","area_bucket","district","tenure","propertyType",
-        "most_recent_buy","most_recent_rent","ROI", "filter"  # 'filter' optional
+        "most_recent_buy","most_recent_rent","ROI",  # originals
+        "filter"  # optional if present
     ]
-
-    # --- robust CSV read (handles irregular rows on Streamlit Cloud) ---
-    def _read_csv_robust(p: Path) -> pd.DataFrame:
-        try:
-            return pd.read_csv(p, low_memory=False)
-        except Exception:
-            try:
-                # sniff delimiter; tolerate bad rows
-                return pd.read_csv(p, engine="python", sep=None, on_bad_lines="skip", low_memory=False)
-            except Exception:
-                # last resort: permissive encoding
-                return pd.read_csv(p, engine="python", sep=None, on_bad_lines="skip",
-                                   low_memory=False, encoding="latin-1")
-
-    if not path.exists():
-        st.error(f"Data file not found: {path}")
-        st.stop()
-
-    raw = _read_csv_robust(path)
-
-    # Keep only columns we use (ignore extras); if some are missing, we’ll proceed with what exists
+    raw = pd.read_csv(path, low_memory=False)
     cols = [c for c in use_cols if c in raw.columns]
     df = raw[cols].copy()
 
@@ -93,14 +74,14 @@ def load_data(path: Path) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
 
-    # Districts → int but stay as string for equality filtering
+    # Districts → int but keep as string for equality filtering
     if "district" in df.columns:
         df["district"] = (
             pd.to_numeric(df["district"], errors="coerce")
             .fillna(0).astype(int).astype(str)
         )
 
-    # Tenure normalization (Freehold / 9999 / 999 / 99 / Other)
+    # Tenure normalization (keeps 9999)
     def map_tenure(val):
         s = str(val).lower()
         if "freehold" in s:
@@ -114,20 +95,9 @@ def load_data(path: Path) -> pd.DataFrame:
         return "Other"
 
     df["tenure_norm"] = df["tenure"].apply(map_tenure)
+    df["lease_year"]  = df["tenure"].apply(lease_start_year_from_tenure).astype("Int64")
 
-    # Year of Lease Start: last 4 chars if digits, else last 4-digit found
-    def lease_start_year_from_tenure(val):
-        if pd.isna(val):
-            return pd.NA
-        s = str(val).strip()
-        if len(s) >= 4 and s[-4:].isdigit():
-            return int(s[-4:])
-        yrs = re.findall(r'(\d{4})', s)
-        return int(yrs[-1]) if yrs else pd.NA
-
-    df["lease_year"] = df["tenure"].apply(lease_start_year_from_tenure).astype("Int64")
-
-    # Numerics
+    # Numeric conversions
     for col in ["most_recent_buy","most_recent_rent","ROI"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
@@ -144,19 +114,9 @@ def load_data(path: Path) -> pd.DataFrame:
             df["ROI"] = df["ROI"] * 100
 
     # Numeric versions of area/filter buckets
-    def bucket_to_first_number(v):
-        if pd.isna(v): return pd.NA
-        s = str(v).strip()
-        m = re.match(r'^\s*(\d+)\s*-\s*\d+\s*$', s) or \
-            re.match(r'^\s*<=?\s*(\d+)\s*$', s) or \
-            re.match(r'^\s*>=?\s*(\d+)\s*$', s) or \
-            re.match(r'^\s*(\d+)\s*\+?\s*$', s)
-        if m: return int(m.group(1))
-        m = re.search(r'(\d+)', s)
-        return int(m.group(1)) if m else pd.NA
-
     if "area_bucket" in df.columns:
         df["area_num"] = df["area_bucket"].apply(bucket_to_first_number).astype("Int64")
+
     if "filter" in df.columns:
         df["filter_num"] = df["filter"].apply(bucket_to_first_number).astype("Int64")
 
